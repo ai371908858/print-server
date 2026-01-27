@@ -6,12 +6,12 @@ $PrintUrl    = "https://hi.alwy.top/d/HDL%E6%96%B0%E5%BA%97/%E5%8E%A8%E6%89%93%E
 $AlwaysUpUrl = "https://hi.alwy.top/d/HDL%E6%96%B0%E5%BA%97/%E5%8E%A8%E6%89%93%E6%9C%8D%E5%8A%A1/AlwaysUp.zip?sign=eBYEdtTm4LnA2YACyMjmOYTEOZHwN5-OhomeROEvI8E=:0"
 $SprtUrl     = "https://hi.alwy.top/d/HDL%E6%96%B0%E5%BA%97/%E5%8E%A8%E6%89%93%E6%9C%8D%E5%8A%A1/SP-DRV2157Win.exe?sign=-v-uNwgi52bwhSu-qMAJUWnXmEN2_6M1jpc3JX1zcL0=:0"
 
-# --- 2. 基础配置 ---
+# --- 2. 基础配置 (自动检测 D 盘) ---
 $TargetDrive = "D:\"
 if (!(Test-Path $TargetDrive)) {
     Write-Warning "未检测到 D 盘，将默认安装到 C:\HDL_Print_Service"
     $TargetDrive = "C:\HDL_Print_Service"
-    New-Item -ItemType Directory -Path $TargetDrive -Force | Out-Null
+    if (!(Test-Path $TargetDrive)) { New-Item -ItemType Directory -Path $TargetDrive -Force | Out-Null }
 }
 
 # --- 3. 功能模块 ---
@@ -28,32 +28,28 @@ function Set-JDK {
         
         $exe = Get-ChildItem $dir -Recurse -Filter "jdk*.exe" | Select-Object -First 1
         if ($exe) { 
-            Write-Host "正在静默安装 JDK，请稍候..." -ForegroundColor Yellow
+            Write-Host "正在静默安装 JDK..." -ForegroundColor Yellow
             Start-Process $exe.FullName -ArgumentList "/s" -Wait 
         } else {
-            Write-Error "在压缩包中未找到 JDK 安装程序。"
+            Write-Error "错误：在压缩包中未找到 JDK 安装程序。"
             return
         }
 
         # 环境变量配置
-        Write-Host "配置环境变量..." -ForegroundColor Cyan
         $jh = "C:\Program Files\Java\jdk1.8.0_201"
         if (!(Test-Path $jh)) {
-            Write-Warning "未检测到 JDK 安装目录 ($jh)，请检查安装是否成功。"
+            Write-Warning "未检测到 JDK 目录 ($jh)，安装可能未完成。"
             return
         }
-
         [Environment]::SetEnvironmentVariable("JAVA_HOME", $jh, "Machine")
         
-        # 优化 Path 设置逻辑，避免重复添加
         $currentPath = [Environment]::GetEnvironmentVariable("Path", "Machine")
         if ($currentPath -notlike "*%JAVA_HOME%\bin*") {
             $newPath = if ($currentPath.EndsWith(";")) { $currentPath + "%JAVA_HOME%\bin;%JAVA_HOME%\jre\bin;" } else { $currentPath + ";%JAVA_HOME%\bin;%JAVA_HOME%\jre\bin;" }
             [Environment]::SetEnvironmentVariable("Path", $newPath, "Machine")
         }
-        
         [Environment]::SetEnvironmentVariable("CLASSPATH", ".;%JAVA_HOME%\lib;%JAVA_HOME%\lib\tools.jar", "Machine")
-        Write-Host "JDK 安装及配置完成！(注意：可能需要重启终端生效)" -ForegroundColor Green
+        Write-Host "JDK 安装及配置完成。" -ForegroundColor Green
     }
     catch {
         Write-Error "JDK 安装失败: $_"
@@ -69,18 +65,16 @@ function Set-PrintService {
         Write-Host "正在解压到 $TargetDrive ..." -ForegroundColor Yellow
         Expand-Archive $zip -DestinationPath $TargetDrive -Force
         
-        $ip = Read-Host "请输入服务器IP (例如 192.168.1.100)"
-        # 根据实际解压路径调整，防止多一层文件夹
+        $ip = Read-Host "请输入服务器IP"
         $potentialPath1 = Join-Path $TargetDrive "shop-print-driver-1.0\conf\env\shop.conf"
         
         if (Test-Path $potentialPath1) {
             $confContent = Get-Content $potentialPath1
-            # 正则替换：查找 jdbc:mysql:// 和 :3306 中间的内容
             $newContent = $confContent -replace '(?<=jdbc:mysql://).*?(?=:3306)', $ip 
             $newContent | Set-Content $potentialPath1
-            Write-Host "配置文件已更新 ($potentialPath1)。" -ForegroundColor Green
+            Write-Host "配置文件已更新。" -ForegroundColor Green
         } else {
-            Write-Warning "未找到配置文件，请手动检查路径：$TargetDrive"
+            Write-Warning "未找到配置文件 shop.conf，请手动检查路径。"
         }
     }
     catch {
@@ -94,65 +88,122 @@ function Set-AlwaysUp {
     $extractDir = "$env:TEMP\AlwaysUp_Install"
     
     try {
-        Write-Host "正在下载..." -ForegroundColor Gray
+        Write-Host "正在下载..." 
         Invoke-WebRequest $AlwaysUpUrl -OutFile $zipPath -UseBasicParsing
         
-        Write-Host "正在解压..." -ForegroundColor Gray
+        Write-Host "正在解压..."
         if (Test-Path $extractDir) { Remove-Item $extractDir -Recurse -Force }
         Expand-Archive $zipPath -DestinationPath $extractDir -Force
 
         $installerExe = Get-ChildItem -Path $extractDir -Recurse -Filter "*.exe" | Select-Object -First 1
         if ($installerExe) {
-            Write-Host "检测到安装程序，正在执行静默安装..." -ForegroundColor Yellow
-            # 静默安装参数
+            Write-Host "正在静默安装..." -ForegroundColor Yellow
             Start-Process -FilePath $installerExe.FullName -ArgumentList "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART" -Wait
             Write-Host "AlwaysUp 安装完成。" -ForegroundColor Green
         } else {
-            Write-Error "未找到 AlwaysUp 安装程序 (exe)。"
+            Write-Error "未找到 AlwaysUp 安装程序。"
         }
     }
     catch {
         Write-Error "AlwaysUp 安装出错: $_"
     }
     finally {
-        # 清理临时文件
         Remove-Item -Path $extractDir -Recurse -Force -ErrorAction SilentlyContinue
-        if (Test-Path $zipPath) { Remove-Item $zipPath -Force }
     }
 }
 
 function Set-DBAuth {
-    Write-Host "`n>>> 数据库授权配置" -ForegroundColor Cyan
+    Write-Host "`n>>> 数据库授权" -ForegroundColor Cyan
     $ip = Read-Host "请输入服务器IP"
-    $pw = Read-Host "请输入数据库密码(将用于MySQL命令)"
+    $pw = Read-Host "请输入数据库密码"
     $sql = "grant select,insert,update,delete on shop_cloud.* to 'hdldev'@'%' identified by '9^3jIe^0*5'; flush privileges;"
     
-    Write-Host "注意：即将尝试 SSH 连接。如果未配置免密登录，您需要手动输入 Linux Root 密码。" -ForegroundColor Yellow
+    Write-Host "正在尝试 SSH 连接 (需要 OpenSSH 客户端)..." -ForegroundColor Yellow
     try {
-        # 注意：Windows 自带的 OpenSSH 客户端必须已安装
         ssh -o StrictHostKeyChecking=no root@$ip "mysql -u root -p'$pw' -e `"$sql`""
-        Write-Host "命令发送完毕。" -ForegroundColor Green
+        Write-Host "授权命令执行完毕。" -ForegroundColor Green
     }
     catch {
-        Write-Error "SSH 执行失败，请检查是否安装了 OpenSSH 客户端或网络连通性。"
+        Write-Error "SSH 执行失败: $_"
     }
 }
 
 function Set-WinUpdate {
     param([int]$val)
     # 0 = 开启, 1 = 关闭
-    $statusText = if ($val -eq 1) { "禁用 (Disabled)" } else { "手动 (Manual)" }
+    $statusText = if ($val -eq 1) { "Disabled" } else { "Manual" }
     $svcStart = if ($val -eq 1) { "Disabled" } else { "Manual" }
     
     try {
         Set-Service "wuauserv" -StartupType $svcStart
-        
         $path = "HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU"
         if (!(Test-Path $path)) { New-Item $path -Force | Out-Null }
         
-        # NoAutoUpdate: 1 = 禁用自动更新
         Set-ItemProperty $path -Name "NoAutoUpdate" -Value $val
-        Write-Host "Windows 更新策略已设置为: $statusText" -ForegroundColor Green
+        Write-Host "Windows 更新已设置为: $statusText" -ForegroundColor Green
     }
     catch {
-        Write-Error "设置
+        # 确保此处报错信息在一行内，避免语法错误
+        Write-Error "设置 Windows 更新失败，请确保以管理员身份运行。"
+    }
+}
+
+function Set-PidTask {
+    Write-Host "`n>>> 创建 PID 清理任务" -ForegroundColor Cyan
+    $pidFile = Join-Path $TargetDrive "shop-print-driver-1.0\bin\RUNNING_PID"
+    $cmdArg = "/c if exist ""$pidFile"" del ""$pidFile"""
+    
+    try {
+        $act = New-ScheduledTaskAction -Execute "cmd.exe" -Argument $cmdArg
+        $trig = New-ScheduledTaskTrigger -AtStartup
+        Register-ScheduledTask -TaskName "CleanupPID" -Action $act -Trigger $trig -Principal (New-ScheduledTaskPrincipal -UserId "SYSTEM") -Force
+        Write-Host "清理任务已创建。" -ForegroundColor Green
+    }
+    catch {
+        Write-Error "任务创建失败: $_"
+    }
+}
+
+function Get-Driver {
+    Write-Host "`n>>> 下载驱动程序" -ForegroundColor Cyan
+    $outFile = Join-Path $TargetDrive "SP-DRV2157Win.exe"
+    try {
+        Invoke-WebRequest $SprtUrl -OutFile $outFile
+        Write-Host "驱动已下载至: $outFile" -ForegroundColor Green
+    }
+    catch {
+        Write-Error "下载失败: $_"
+    }
+}
+
+# --- 4. 主程序循环 ---
+while ($true) {
+    Write-Host "`n==============================" -ForegroundColor Gray
+    Write-Host "    ChefPrint 运维工具箱      " -ForegroundColor Yellow
+    Write-Host "==============================" -ForegroundColor Gray
+    Write-Host "1. 安装 JDK 环境"
+    Write-Host "2. 部署打印服务"
+    Write-Host "3. 安装 AlwaysUp"
+    Write-Host "4. 数据库授权"
+    Write-Host "5. 关闭 Windows 自动更新"
+    Write-Host "6. 开启 Windows 自动更新"
+    Write-Host "7. 创建 PID 清理任务"
+    Write-Host "8. 下载驱动"
+    Write-Host "q. 退出"
+    Write-Host "------------------------------"
+    
+    $choice = Read-Host "请输入选项"
+    
+    switch ($choice) {
+        "1" { Set-JDK }
+        "2" { Set-PrintService }
+        "3" { Set-AlwaysUp }
+        "4" { Set-DBAuth }
+        "5" { Set-WinUpdate 1 }
+        "6" { Set-WinUpdate 0 }
+        "7" { Set-PidTask }
+        "8" { Get-Driver }
+        "q" { break }
+        default { Write-Warning "无效输入" }
+    }
+}
