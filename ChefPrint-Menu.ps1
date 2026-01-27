@@ -89,13 +89,149 @@ function Set-NssmService {
         }
     }
 
-    # 2. 定位 Bat 文件 (修复路径拼接问题)
-    # 确保 TargetDrive 不带尾部斜杠，方便拼接
+    # 2. 定位 Bat 文件 (手动构建路径，修复兼容性)
     $rootPath = $TargetDrive.TrimEnd("\")
     
-    # 手动构建路径数组，避免 Join-Path 兼容性问题
     $possiblePaths = @(
         "$rootPath\shop-print-driver-1.0\bin\shop-print-driver.bat",
         "$rootPath\shop-print-driver-1.0\bin\shop-print.bat",
         "$rootPath\shop-print-1.0\bin\shop-print.bat"
     )
+    
+    Write-Host "正在搜索启动脚本..." -ForegroundColor Gray
+    $batPath = $null
+    foreach ($p in $possiblePaths) {
+        if (Test-Path $p) {
+            $batPath = $p
+            break
+        }
+    }
+
+    if (!$batPath) { 
+        Write-Error "❌ 未找到启动脚本！已尝试以下路径:" 
+        $possiblePaths | ForEach-Object { Write-Host " - $_" }
+        Write-Error "请检查第2步是否解压成功，或手动确认文件位置。"
+        return 
+    }
+    
+    Write-Host "✅ 已定位脚本: $batPath" -ForegroundColor Green
+    $workDir = Split-Path -Parent $batPath
+
+    # 3. 服务配置参数
+    $svcName = "Shop-print"
+    $svcArgs = "-Dhttp.port=8041 -Dconfig.resource=env/shop.conf -Dplay.crypto.secret=123"
+
+    try {
+        # 停止并清理旧服务
+        & $nssmExe stop $svcName 2>&1 | Out-Null
+        & $nssmExe remove $svcName confirm 2>&1 | Out-Null
+        Start-Sleep -Seconds 1
+
+        # 安装服务
+        Write-Host "正在安装服务 [$svcName]..." -ForegroundColor Yellow
+        & $nssmExe install $svcName "$batPath" $svcArgs
+        
+        # 配置工作目录
+        & $nssmExe set $svcName AppDirectory "$workDir"
+        
+        # 配置日志
+        $logPath = "$workDir\service-nssm.log"
+        & $nssmExe set $svcName AppStdout "$logPath"
+        & $nssmExe set $svcName AppStderr "$logPath"
+        
+        # 配置重启策略
+        & $nssmExe set $svcName AppExit Default Restart
+        & $nssmExe set $svcName AppRestartDelay 5000 
+
+        # 启动服务
+        Write-Host "正在启动服务..." -ForegroundColor Cyan
+        & $nssmExe start $svcName
+        
+        Start-Sleep -Seconds 2
+        $status = Get-Service $svcName -ErrorAction SilentlyContinue
+        if ($status.Status -eq 'Running') {
+            Write-Host "=== 服务部署成功！状态：正在运行 ===" -ForegroundColor Green
+            Write-Host "日志文件: $logPath" -ForegroundColor Gray
+        } else {
+            Write-Warning "服务已安装，但当前状态为: $($status.Status)。请查看日志文件排错。"
+        }
+    } catch {
+        Write-Error "服务配置过程中发生异常: $_"
+    }
+}
+
+function Set-DBAuth {
+    Write-Host "`n>>> 数据库授权" -ForegroundColor Cyan
+    $ip = Read-Host "请输入服务器IP"
+    $pw = Read-Host "请输入数据库密码"
+    $sql = "grant select,insert,update,delete on shop_cloud.* to 'hdldev'@'%' identified by '9^3jIe^0*5'; flush privileges;"
+    try {
+        ssh -o StrictHostKeyChecking=no root@$ip "mysql -u root -p'$pw' -e `"$sql`""
+        Write-Host "授权成功。" -ForegroundColor Green
+    } catch { Write-Error "SSH 执行失败: $_" }
+}
+
+function Set-WinUpdate {
+    param([int]$val)
+    $statusText = if ($val -eq 1) { "Disabled" } else { "Manual" }
+    try {
+        Set-Service "wuauserv" -StartupType $statusText
+        $path = "HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU"
+        if (!(Test-Path $path)) { New-Item $path -Force | Out-Null }
+        Set-ItemProperty $path -Name "NoAutoUpdate" -Value $val
+        Write-Host "Windows 更新策略已更新。" -ForegroundColor Green
+    } catch { Write-Error "设置更新失败: $_" }
+}
+
+function Set-PidTask {
+    Write-Host "`n>>> 创建 PID 清理任务" -ForegroundColor Cyan
+    $pidFile = "$TargetDrive\shop-print-driver-1.0\bin\RUNNING_PID"
+    $cmdArg = "/c if exist ""$pidFile"" del ""$pidFile"""
+    try {
+        $act = New-ScheduledTaskAction -Execute "cmd.exe" -Argument $cmdArg
+        $trig = New-ScheduledTaskTrigger -AtStartup
+        Register-ScheduledTask -TaskName "CleanupPID" -Action $act -Trigger $trig -Principal (New-ScheduledTaskPrincipal -UserId "SYSTEM") -Force
+        Write-Host "清理任务已创建。" -ForegroundColor Green
+    } catch { Write-Error "任务创建失败: $_" }
+}
+
+function Get-Driver {
+    Write-Host "`n>>> 下载驱动程序" -ForegroundColor Cyan
+    $outFile = "$TargetDrive\SP-DRV2157Win.exe"
+    try {
+        Invoke-WebRequest $SprtUrl -OutFile $outFile
+        Write-Host "驱动下载完成。" -ForegroundColor Green
+    } catch { Write-Error "下载失败: $_" }
+}
+
+# --- 4. 主程序循环 ---
+while ($true) {
+    Write-Host "`n==============================" -ForegroundColor Gray
+    Write-Host "    ChefPrint 运维工具箱      " -ForegroundColor Yellow
+    Write-Host "==============================" -ForegroundColor Gray
+    Write-Host "1. 安装 JDK 环境"
+    Write-Host "2. 部署打印服务 (解压+配置)"
+    Write-Host "3. 安装守护服务 (NSSM方案)"
+    Write-Host "4. 数据库授权"
+    Write-Host "5. 关闭 Windows 自动更新"
+    Write-Host "6. 开启 Windows 自动更新"
+    Write-Host "7. 创建 PID 清理任务"
+    Write-Host "8. 下载驱动"
+    Write-Host "q. 退出"
+    Write-Host "------------------------------"
+    
+    $choice = Read-Host "请输入选项"
+    
+    switch ($choice) {
+        "1" { Set-JDK }
+        "2" { Set-PrintService }
+        "3" { Set-NssmService } 
+        "4" { Set-DBAuth }
+        "5" { Set-WinUpdate 1 }
+        "6" { Set-WinUpdate 0 }
+        "7" { Set-PidTask }
+        "8" { Get-Driver }
+        "q" { break }
+        default { Write-Warning "无效输入" }
+    }
+}
