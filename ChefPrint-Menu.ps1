@@ -14,6 +14,9 @@ if (!(Test-Path $TargetDrive)) {
     if (!(Test-Path $TargetDrive)) { New-Item -ItemType Directory -Path $TargetDrive -Force | Out-Null }
 }
 
+# AlwaysUp 命令行工具默认路径
+$AuCmdPath = "C:\Program Files (x86)\AlwaysUp\AlwaysUpCmd.exe"
+
 # --- 3. 功能模块 ---
 
 function Set-JDK {
@@ -112,6 +115,57 @@ function Set-AlwaysUp {
     }
 }
 
+# --- 新增功能: 配置 AlwaysUp 监控 ---
+function Add-AlwaysUpService {
+    Write-Host "`n>>> 正在配置 AlwaysUp 监控服务 (Shop-print)..." -ForegroundColor Cyan
+    
+    # 1. 检查 AlwaysUpCmd 是否存在
+    if (!(Test-Path $AuCmdPath)) {
+        Write-Error "未找到 AlwaysUp 命令行工具 ($AuCmdPath)。`n请先执行步骤 3 安装 AlwaysUp。"
+        return
+    }
+
+    # 2. 智能查找 bat 文件 (兼容 shop-print-driver-1.0 和 shop-print-1.0)
+    $possiblePaths = @(
+        Join-Path $TargetDrive "shop-print-driver-1.0\bin\shop-print.bat",
+        Join-Path $TargetDrive "shop-print-1.0\bin\shop-print.bat"
+    )
+    $batPath = $possiblePaths | Where-Object { Test-Path $_ } | Select-Object -First 1
+
+    if (!$batPath) {
+        Write-Error "未找到启动脚本 shop-print.bat。`n请检查 $TargetDrive 下是否存在 shop-print-driver-1.0 或 shop-print-1.0 目录。"
+        return
+    }
+    Write-Host "已定位启动脚本: $batPath" -ForegroundColor Gray
+
+    # 3. 定义参数
+    $svcName = "Shop-print"
+    $svcArgs = "-Dhttp.port=8041 -Dconfig.resource=env/shop.conf -Dplay.crypto.secret=123"
+
+    try {
+        # 4. 执行添加命令 (先尝试删除旧的同名服务以防冲突)
+        Write-Host "正在创建服务..." -ForegroundColor Yellow
+        # 使用 cmd /c 能够更好地处理参数中的空格和引号问题
+        $cmdAdd = "& `"$AuCmdPath`" add --name `"$svcName`" --application `"$batPath`" --arguments `"$svcArgs`" --uipassword `" `" 2>&1"
+        Invoke-Expression $cmdAdd | Out-Null
+
+        # 5. 配置开机自启
+        Write-Host "设置开机自启..." -ForegroundColor Gray
+        & $AuCmdPath set $svcName --startuponboot yes | Out-Null
+
+        # 6. 配置崩溃重启
+        Write-Host "设置崩溃自动重启..." -ForegroundColor Gray
+        & $AuCmdPath set $svcName --restart yes | Out-Null
+        & $AuCmdPath set $svcName --restartdelay 5 | Out-Null
+
+        Write-Host "=== 服务 [$svcName] 配置成功！ ===" -ForegroundColor Green
+        Write-Host "提示: 您可以在 AlwaysUp 界面中手动启动它，或重启电脑测试。" -ForegroundColor Yellow
+    }
+    catch {
+        Write-Error "配置服务失败: $_"
+    }
+}
+
 function Set-DBAuth {
     Write-Host "`n>>> 数据库授权" -ForegroundColor Cyan
     $ip = Read-Host "请输入服务器IP"
@@ -130,7 +184,6 @@ function Set-DBAuth {
 
 function Set-WinUpdate {
     param([int]$val)
-    # 0 = 开启, 1 = 关闭
     $statusText = if ($val -eq 1) { "Disabled" } else { "Manual" }
     $svcStart = if ($val -eq 1) { "Disabled" } else { "Manual" }
     
@@ -143,7 +196,6 @@ function Set-WinUpdate {
         Write-Host "Windows 更新已设置为: $statusText" -ForegroundColor Green
     }
     catch {
-        # 确保此处报错信息在一行内，避免语法错误
         Write-Error "设置 Windows 更新失败，请确保以管理员身份运行。"
     }
 }
@@ -182,13 +234,14 @@ while ($true) {
     Write-Host "    ChefPrint 运维工具箱      " -ForegroundColor Yellow
     Write-Host "==============================" -ForegroundColor Gray
     Write-Host "1. 安装 JDK 环境"
-    Write-Host "2. 部署打印服务"
-    Write-Host "3. 安装 AlwaysUp"
-    Write-Host "4. 数据库授权"
-    Write-Host "5. 关闭 Windows 自动更新"
-    Write-Host "6. 开启 Windows 自动更新"
-    Write-Host "7. 创建 PID 清理任务"
-    Write-Host "8. 下载驱动"
+    Write-Host "2. 部署打印服务 (解压+配置)"
+    Write-Host "3. 安装 AlwaysUp 软件"
+    Write-Host "4. 配置 AlwaysUp 守护 (Shop-print)"
+    Write-Host "5. 数据库授权"
+    Write-Host "6. 关闭 Windows 自动更新"
+    Write-Host "7. 开启 Windows 自动更新"
+    Write-Host "8. 创建 PID 清理任务"
+    Write-Host "9. 下载驱动"
     Write-Host "q. 退出"
     Write-Host "------------------------------"
     
@@ -198,11 +251,12 @@ while ($true) {
         "1" { Set-JDK }
         "2" { Set-PrintService }
         "3" { Set-AlwaysUp }
-        "4" { Set-DBAuth }
-        "5" { Set-WinUpdate 1 }
-        "6" { Set-WinUpdate 0 }
-        "7" { Set-PidTask }
-        "8" { Get-Driver }
+        "4" { Add-AlwaysUpService }
+        "5" { Set-DBAuth }
+        "6" { Set-WinUpdate 1 }
+        "7" { Set-WinUpdate 0 }
+        "8" { Set-PidTask }
+        "9" { Get-Driver }
         "q" { break }
         default { Write-Warning "无效输入" }
     }
