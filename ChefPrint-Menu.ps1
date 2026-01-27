@@ -42,18 +42,26 @@ function Set-PrintService {
     }
 }
 
-function Set-AlwaysUp {
-    Write-Host ">>> 正在安装 AlwaysUp..." -ForegroundColor Cyan
-    $zip = "$env:TEMP\au.zip"
-    Invoke-WebRequest $AlwaysUpUrl -OutFile $zip -UseBasicParsing
-    Expand-Archive $zip -DestinationPath "$env:TEMP\au_dir" -Force
-    $exe = Get-ChildItem "$env:TEMP\au_dir" -Recurse -Filter "*.exe" | Select-Object -First 1
-    if ($exe) { Start-Process $exe.FullName -Wait }
-    $au = "C:\Program Files (x86)\AlwaysUp\AlwaysUp.exe"
-    if (Test-Path $au) {
-        & $au -add "Shop-print" "D:\shop-print-driver-1.0\bin\shop-print.bat" "-Dhttp.port=8041 -Dconfig.resource=env/shop.conf -Dplay.crypto.secret=123"
-        Write-Host "服务已添加。" -ForegroundColor Green
+function Install-AlwaysUp {
+  Write-Log "== 开始全自动安装 AlwaysUp =="
+  $zipPath = Join-Path $env:TEMP "AlwaysUp.zip"
+  # 使用通用下载函数 [cite: 7, 15]
+  Download-File -Url "您的AlwaysUp下载地址" -OutPath $zipPath | Out-Null
+
+  # 解压并寻找安装程序 [cite: 9, 10]
+  $extractRoot = Extract-ZipToTemp -ZipPath $zipPath
+  try {
+    $installerExe = Get-ChildItem -Path $extractRoot -Recurse -Filter "*.exe" | Select-Object -First 1
+    if ($installerExe) {
+      Write-Log "检测到安装程序，正在执行静默安装..."
+      # 关键优化：添加静默安装参数
+      Start-Process -FilePath $installerExe.FullName -ArgumentList "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART" -Wait
+      Write-Log "AlwaysUp 安装完成。"
     }
+  }
+  finally {
+    Remove-Item -Path $extractRoot -Recurse -Force -ErrorAction SilentlyContinue
+  }
 }
 
 function Set-DBAuth {
@@ -100,3 +108,4 @@ while ($true) {
         "q" { break }
     }
 }
+
